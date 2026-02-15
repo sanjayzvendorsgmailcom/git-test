@@ -290,27 +290,21 @@ with btn_col2:
     st.button("Fetch Last Price & Volume", type="secondary",
               on_click=lambda: st.session_state.update({"do_fetch_price": True}))
 
-# --- Fetch last price & volume ---
-if st.session_state.pop("do_fetch_price", False):
-    progress = st.progress(0, text="Fetching price & volume data...")
-    price_results = []
-    debug_container = st.container()
-    for i, sym in enumerate(symbols):
-        progress.progress((i + 1) / len(symbols), text=f"Fetching {sym} ({i+1}/{len(symbols)})...")
-        data = fetch_last_trading_data(sym)
-        with debug_container:
-            if "_debug_hist" in data:
-                st.write(f"**{sym}** - raw hist from yfinance:")
-                st.dataframe(pd.DataFrame(data["_debug_hist"]), use_container_width=True)
-            elif "_debug_error" in data:
-                st.warning(f"**{sym}** - no data: {data['_debug_error']}")
-        clean_data = {k: v for k, v in data.items() if not k.startswith("_debug")}
-        price_results.append({"Symbol": sym, **clean_data})
-        if (i + 1) % 5 == 0:
-            time.sleep(0.3)
-    progress.empty()
+# --- Fetch last price & volume (runs then reruns to display) ---
+if st.session_state.get("do_fetch_price"):
+    with st.spinner("Fetching price & volume data..."):
+        price_results = []
+        for i, sym in enumerate(symbols):
+            data = fetch_last_trading_data(sym)
+            clean_data = {k: v for k, v in data.items() if not k.startswith("_debug")}
+            price_results.append({"Symbol": sym, **clean_data})
+            if (i + 1) % 5 == 0:
+                time.sleep(0.3)
     st.session_state["price_results"] = price_results
+    del st.session_state["do_fetch_price"]
+    st.rerun()
 
+# --- Display price & volume ---
 if st.session_state.get("price_results"):
     price_df = pd.DataFrame(st.session_state["price_results"])
     st.subheader(f"Last Trading Day - Price & Volume ({len(price_df)} stocks)")
@@ -324,19 +318,19 @@ if st.session_state.get("price_results"):
         },
     )
 
-# --- Fetch earnings data ---
-if st.session_state.pop("do_fetch_earnings", False):
-    progress = st.progress(0, text="Fetching earnings data...")
-    results = []
-    for i, sym in enumerate(symbols):
-        progress.progress((i + 1) / len(symbols), text=f"Fetching {sym} ({i+1}/{len(symbols)})...")
-        data = fetch_earnings_data(sym)
-        results.append({"Symbol": sym, **data})
-        if (i + 1) % 5 == 0:
-            time.sleep(0.5)
-    progress.empty()
+# --- Fetch earnings data (runs then reruns to display) ---
+if st.session_state.get("do_fetch_earnings"):
+    with st.spinner("Fetching earnings data..."):
+        results = []
+        for i, sym in enumerate(symbols):
+            data = fetch_earnings_data(sym)
+            results.append({"Symbol": sym, **data})
+            if (i + 1) % 5 == 0:
+                time.sleep(0.5)
     st.session_state["results"] = results
     st.session_state["symbols"] = symbols
+    del st.session_state["do_fetch_earnings"]
+    st.rerun()
 
 if st.session_state.get("results"):
     results = st.session_state["results"]
