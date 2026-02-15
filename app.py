@@ -214,6 +214,25 @@ def fetch_earnings_data(symbol):
         return {"next_earnings": None, "eps_history": [], "error": str(e)}
 
 
+@st.cache_data(ttl=300)
+def fetch_last_trading_data(symbol):
+    """Fetch last trading day close price and total volume for a single ticker."""
+    try:
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period="5d")
+        if hist is not None and not hist.empty:
+            last_row = hist.iloc[-1]
+            trade_date = hist.index[-1]
+            return {
+                "Last Price": round(last_row["Close"], 2),
+                "Volume": int(last_row["Volume"]),
+                "Trade Date": trade_date.strftime("%Y-%m-%d"),
+            }
+    except Exception:
+        pass
+    return {"Last Price": None, "Volume": None, "Trade Date": None}
+
+
 # --- Sidebar controls ---
 st.sidebar.header("Settings")
 
@@ -261,11 +280,37 @@ elif ticker_source == "Yahoo Finance Most Active":
 else:
     symbols = custom_tickers[:batch_size]
 
-# --- Fetch earnings data ---
-if st.button("Fetch Earnings Data", type="primary") or st.session_state.get("results"):
-    if st.button("Fetch Earnings Data", type="primary", key="hidden", disabled=True):
-        pass
+# --- Fetch buttons ---
+btn_col1, btn_col2, _ = st.columns([1, 1, 2])
+with btn_col1:
+    fetch_earnings_clicked = st.button("Fetch Earnings Data", type="primary")
+with btn_col2:
+    fetch_price_clicked = st.button("Fetch Last Price & Volume", type="secondary")
 
+# --- Fetch last price & volume ---
+if fetch_price_clicked:
+    progress = st.progress(0, text="Fetching price & volume data...")
+    price_results = []
+    for i, sym in enumerate(symbols):
+        progress.progress((i + 1) / len(symbols), text=f"Fetching {sym} ({i+1}/{len(symbols)})...")
+        data = fetch_last_trading_data(sym)
+        price_results.append({"Symbol": sym, **data})
+        if (i + 1) % 5 == 0:
+            time.sleep(0.3)
+    progress.empty()
+    st.session_state["price_results"] = price_results
+
+if st.session_state.get("price_results"):
+    price_df = pd.DataFrame(st.session_state["price_results"])
+    st.subheader(f"Last Trading Day - Price & Volume ({len(price_df)} stocks)")
+    styled_price = price_df.style.format({
+        "Last Price": lambda x: f"${x:,.2f}" if pd.notna(x) else "N/A",
+        "Volume": lambda x: f"{x:,.0f}" if pd.notna(x) else "N/A",
+    })
+    st.dataframe(styled_price, use_container_width=True, height=600)
+
+# --- Fetch earnings data ---
+if fetch_earnings_clicked or st.session_state.get("results"):
     if "results" not in st.session_state or st.session_state.get("symbols") != symbols:
         progress = st.progress(0, text="Fetching earnings data...")
         results = []
