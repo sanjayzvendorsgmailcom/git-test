@@ -1,0 +1,313 @@
+import streamlit as st
+import yfinance as yf
+import pandas as pd
+from datetime import datetime, timedelta
+import requests
+from bs4 import BeautifulSoup
+import time
+
+st.set_page_config(page_title="Stock Earnings Tracker", layout="wide")
+st.title("Stock Earnings Tracker")
+st.markdown("Tracks upcoming earnings dates and recent EPS data from Yahoo Finance.")
+
+
+@st.cache_data(ttl=3600)
+def get_sp500_tickers():
+    """Scrape S&P 500 tickers from Wikipedia."""
+    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    resp = requests.get(url, timeout=15)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+    table = soup.find("table", {"id": "constituents"})
+    rows = table.find("tbody").find_all("tr")[1:]
+    tickers = []
+    for row in rows:
+        cols = row.find_all("td")
+        if cols:
+            symbol = cols[0].text.strip().replace(".", "-")
+            name = cols[1].text.strip()
+            sector = cols[3].text.strip()
+            tickers.append({"Symbol": symbol, "Name": name, "Sector": sector})
+    return pd.DataFrame(tickers)
+
+
+@st.cache_data(ttl=3600)
+def get_most_active_tickers():
+    """Scrape Yahoo Finance most active stocks page."""
+    url = "https://finance.yahoo.com/most-active/"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        symbols = []
+        for link in soup.find_all("a", {"data-testid": "table-cell-ticker"}):
+            symbols.append(link.text.strip())
+        if not symbols:
+            for link in soup.select("a[href*='/quote/']"):
+                txt = link.text.strip()
+                if txt.isupper() and 1 <= len(txt) <= 5:
+                    symbols.append(txt)
+        return list(dict.fromkeys(symbols))[:50]
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=1800)
+def fetch_earnings_data(symbol):
+    """Fetch earnings dates and EPS history for a single ticker."""
+    try:
+        ticker = yf.Ticker(symbol)
+
+        # Get upcoming earnings date
+        next_earnings = None
+        try:
+            cal = ticker.calendar
+            if cal is not None:
+                if isinstance(cal, dict):
+                    if "Earnings Date" in cal:
+                        dates = cal["Earnings Date"]
+                        if isinstance(dates, list) and len(dates) > 0:
+                            next_earnings = pd.Timestamp(dates[0])
+                        elif not isinstance(dates, list):
+                            next_earnings = pd.Timestamp(dates)
+                elif isinstance(cal, pd.DataFrame) and not cal.empty:
+                    if "Earnings Date" in cal.index:
+                        val = cal.loc["Earnings Date"].iloc[0]
+                        next_earnings = pd.Timestamp(val)
+        except Exception:
+            pass
+
+        # Get EPS history from earnings_history or quarterly_earnings
+        eps_records = []
+        try:
+            eh = ticker.earnings_history
+            if eh is not None and isinstance(eh, pd.DataFrame) and not eh.empty:
+                for _, row in eh.iterrows():
+                    record = {}
+                    # Try to get the date
+                    if hasattr(row, "name") and row.name is not None:
+                        record["Date"] = str(row.name)
+                    for col in eh.columns:
+                        if "date" in col.lower():
+                            record["Date"] = str(row[col])
+                    # Get EPS values
+                    for col in eh.columns:
+                        if "eps" in col.lower() and "actual" in col.lower():
+                            record["EPS Actual"] = row[col]
+                        elif "eps" in col.lower() and "estimate" in col.lower():
+                            record["EPS Estimate"] = row[col]
+                        elif "eps" in col.lower() and "surprise" in col.lower():
+                            record["EPS Surprise (%)"] = row[col]
+                    if record:
+                        eps_records.append(record)
+        except Exception:
+            pass
+
+        # Fallback: use quarterly earnings
+        if not eps_records:
+            try:
+                qe = ticker.quarterly_earnings
+                if qe is not None and isinstance(qe, pd.DataFrame) and not qe.empty:
+                    for idx, row in qe.iterrows():
+                        record = {"Date": str(idx)}
+                        if "Earnings" in qe.columns:
+                            record["EPS Actual"] = row["Earnings"]
+                        if "Revenue" in qe.columns:
+                            record["Revenue"] = row["Revenue"]
+                        eps_records.append(record)
+            except Exception:
+                pass
+
+        # Fallback: use earnings_dates
+        if not eps_records:
+            try:
+                ed = ticker.earnings_dates
+                if ed is not None and isinstance(ed, pd.DataFrame) and not ed.empty:
+                    past = ed[ed.index <= pd.Timestamp.now(tz=ed.index.tz)]
+                    for idx, row in past.head(4).iterrows():
+                        record = {"Date": idx.strftime("%Y-%m-%d")}
+                        for col in ed.columns:
+                            if "eps" in col.lower() and "actual" in col.lower():
+                                record["EPS Actual"] = row[col]
+                            elif "eps" in col.lower() and "estimate" in col.lower():
+                                record["EPS Estimate"] = row[col]
+                            elif "surprise" in col.lower():
+                                record["EPS Surprise (%)"] = row[col]
+                        eps_records.append(record)
+
+                    # Also try to get next earnings from future dates
+                    if next_earnings is None:
+                        future = ed[ed.index > pd.Timestamp.now(tz=ed.index.tz)]
+                        if not future.empty:
+                            next_earnings = future.index[0]
+            except Exception:
+                pass
+
+        return {
+            "next_earnings": next_earnings,
+            "eps_history": eps_records,
+        }
+
+    except Exception as e:
+        return {"next_earnings": None, "eps_history": [], "error": str(e)}
+
+
+# --- Sidebar controls ---
+st.sidebar.header("Settings")
+
+ticker_source = st.sidebar.radio(
+    "Ticker Source",
+    ["S&P 500 (Wikipedia)", "Yahoo Finance Most Active", "Custom List"],
+)
+
+custom_tickers = []
+if ticker_source == "Custom List":
+    raw = st.sidebar.text_area(
+        "Enter tickers (comma-separated)",
+        value="AAPL, MSFT, GOOGL, AMZN, TSLA, NVDA, META, JPM, V, JNJ",
+    )
+    custom_tickers = [t.strip().upper() for t in raw.split(",") if t.strip()]
+
+batch_size = st.sidebar.slider("Tickers to fetch", min_value=5, max_value=100, value=20, step=5)
+show_only_upcoming = st.sidebar.checkbox("Show only stocks with upcoming earnings", value=False)
+
+# --- Load tickers ---
+if ticker_source == "S&P 500 (Wikipedia)":
+    with st.spinner("Loading S&P 500 tickers from Wikipedia..."):
+        sp500_df = get_sp500_tickers()
+    symbols = sp500_df["Symbol"].tolist()[:batch_size]
+    st.sidebar.success(f"Loaded {len(sp500_df)} S&P 500 tickers. Showing first {batch_size}.")
+
+    with st.expander("S&P 500 Ticker List"):
+        sector_filter = st.multiselect("Filter by sector", sp500_df["Sector"].unique().tolist())
+        if sector_filter:
+            filtered = sp500_df[sp500_df["Sector"].isin(sector_filter)]
+            symbols = filtered["Symbol"].tolist()[:batch_size]
+            st.dataframe(filtered, use_container_width=True)
+        else:
+            st.dataframe(sp500_df.head(batch_size), use_container_width=True)
+
+elif ticker_source == "Yahoo Finance Most Active":
+    with st.spinner("Loading most active tickers from Yahoo Finance..."):
+        active = get_most_active_tickers()
+    if active:
+        symbols = active[:batch_size]
+        st.sidebar.success(f"Loaded {len(active)} most active tickers.")
+    else:
+        st.sidebar.warning("Could not scrape Yahoo Finance. Using default list.")
+        symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "JPM", "V", "JNJ"]
+else:
+    symbols = custom_tickers[:batch_size]
+
+# --- Fetch earnings data ---
+if st.button("Fetch Earnings Data", type="primary") or st.session_state.get("results"):
+    if st.button("Fetch Earnings Data", type="primary", key="hidden", disabled=True):
+        pass
+
+    if "results" not in st.session_state or st.session_state.get("symbols") != symbols:
+        progress = st.progress(0, text="Fetching earnings data...")
+        results = []
+        for i, sym in enumerate(symbols):
+            progress.progress((i + 1) / len(symbols), text=f"Fetching {sym} ({i+1}/{len(symbols)})...")
+            data = fetch_earnings_data(sym)
+            results.append({"Symbol": sym, **data})
+            if (i + 1) % 5 == 0:
+                time.sleep(0.5)  # Rate-limit to avoid throttling
+        progress.empty()
+        st.session_state["results"] = results
+        st.session_state["symbols"] = symbols
+
+    results = st.session_state["results"]
+
+    # --- Build summary table ---
+    summary_rows = []
+    for r in results:
+        next_earn = r.get("next_earnings")
+        if next_earn is not None:
+            next_earn_str = pd.Timestamp(next_earn).strftime("%Y-%m-%d")
+            days_away = (pd.Timestamp(next_earn).tz_localize(None) - pd.Timestamp.now()).days
+        else:
+            next_earn_str = "N/A"
+            days_away = None
+
+        last_eps = None
+        last_eps_date = None
+        eps_surprise = None
+        eps_hist = r.get("eps_history", [])
+        if eps_hist:
+            latest = eps_hist[0]
+            last_eps = latest.get("EPS Actual")
+            last_eps_date = latest.get("Date")
+            eps_surprise = latest.get("EPS Surprise (%)")
+
+        summary_rows.append({
+            "Symbol": r["Symbol"],
+            "Next Earnings Date": next_earn_str,
+            "Days Until Earnings": days_away,
+            "Last EPS": last_eps,
+            "Last EPS Date": last_eps_date,
+            "EPS Surprise (%)": eps_surprise,
+        })
+
+    summary_df = pd.DataFrame(summary_rows)
+
+    if show_only_upcoming:
+        summary_df = summary_df[summary_df["Next Earnings Date"] != "N/A"]
+
+    # Sort by days until earnings
+    sort_col = "Days Until Earnings"
+    if sort_col in summary_df.columns:
+        summary_df = summary_df.sort_values(sort_col, ascending=True, na_position="last")
+
+    st.subheader(f"Earnings Overview ({len(summary_df)} stocks)")
+
+    # Highlight formatting
+    def highlight_earnings(row):
+        styles = [""] * len(row)
+        if row["Days Until Earnings"] is not None and not pd.isna(row["Days Until Earnings"]):
+            if row["Days Until Earnings"] <= 7:
+                styles[1] = "background-color: #ffcccc; font-weight: bold"
+                styles[2] = "background-color: #ffcccc; font-weight: bold"
+            elif row["Days Until Earnings"] <= 30:
+                styles[1] = "background-color: #fff3cd"
+                styles[2] = "background-color: #fff3cd"
+        return styles
+
+    styled = summary_df.style.apply(highlight_earnings, axis=1).format({
+        "Last EPS": lambda x: f"{x:.2f}" if pd.notna(x) else "N/A",
+        "EPS Surprise (%)": lambda x: f"{x:.2f}%" if pd.notna(x) else "N/A",
+        "Days Until Earnings": lambda x: f"{int(x)}" if pd.notna(x) else "N/A",
+    })
+    st.dataframe(styled, use_container_width=True, height=600)
+
+    # --- Detailed EPS history per stock ---
+    st.subheader("Detailed EPS History")
+    selected = st.multiselect(
+        "Select stocks to view EPS history",
+        summary_df["Symbol"].tolist(),
+        default=summary_df["Symbol"].tolist()[:5],
+    )
+
+    for sym in selected:
+        match = [r for r in results if r["Symbol"] == sym]
+        if not match:
+            continue
+        r = match[0]
+        eps_hist = r.get("eps_history", [])
+        if eps_hist:
+            st.markdown(f"**{sym}**")
+            eps_df = pd.DataFrame(eps_hist)
+            st.dataframe(eps_df, use_container_width=True)
+        else:
+            st.markdown(f"**{sym}** - No EPS history available.")
+
+    # --- Download CSV ---
+    st.subheader("Export")
+    csv = summary_df.to_csv(index=False)
+    st.download_button(
+        label="Download earnings data as CSV",
+        data=csv,
+        file_name=f"earnings_tracker_{datetime.now().strftime('%Y%m%d')}.csv",
+        mime="text/csv",
+    )
