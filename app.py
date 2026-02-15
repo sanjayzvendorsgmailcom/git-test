@@ -227,10 +227,11 @@ def fetch_last_trading_data(symbol):
                 "Last Price": round(last_row["Close"], 2),
                 "Volume": int(last_row["Volume"]),
                 "Trade Date": trade_date.strftime("%Y-%m-%d"),
+                "_debug_hist": hist.to_dict(),
             }
-    except Exception:
-        pass
-    return {"Last Price": None, "Volume": None, "Trade Date": None}
+    except Exception as e:
+        return {"Last Price": None, "Volume": None, "Trade Date": None, "_debug_error": str(e)}
+    return {"Last Price": None, "Volume": None, "Trade Date": None, "_debug_error": "empty history"}
 
 
 # --- Sidebar controls ---
@@ -293,10 +294,18 @@ with btn_col2:
 if st.session_state.pop("do_fetch_price", False):
     progress = st.progress(0, text="Fetching price & volume data...")
     price_results = []
+    debug_container = st.container()
     for i, sym in enumerate(symbols):
         progress.progress((i + 1) / len(symbols), text=f"Fetching {sym} ({i+1}/{len(symbols)})...")
         data = fetch_last_trading_data(sym)
-        price_results.append({"Symbol": sym, **data})
+        with debug_container:
+            if "_debug_hist" in data:
+                st.write(f"**{sym}** - raw hist from yfinance:")
+                st.dataframe(pd.DataFrame(data["_debug_hist"]), use_container_width=True)
+            elif "_debug_error" in data:
+                st.warning(f"**{sym}** - no data: {data['_debug_error']}")
+        clean_data = {k: v for k, v in data.items() if not k.startswith("_debug")}
+        price_results.append({"Symbol": sym, **clean_data})
         if (i + 1) % 5 == 0:
             time.sleep(0.3)
     progress.empty()
