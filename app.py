@@ -11,24 +11,85 @@ st.title("Stock Earnings Tracker")
 st.markdown("Tracks upcoming earnings dates and recent EPS data from Yahoo Finance.")
 
 
+DEFAULT_TICKERS = [
+    {"Symbol": "AAPL", "Name": "Apple Inc.", "Sector": "Information Technology"},
+    {"Symbol": "MSFT", "Name": "Microsoft Corp.", "Sector": "Information Technology"},
+    {"Symbol": "AMZN", "Name": "Amazon.com Inc.", "Sector": "Consumer Discretionary"},
+    {"Symbol": "NVDA", "Name": "NVIDIA Corp.", "Sector": "Information Technology"},
+    {"Symbol": "GOOGL", "Name": "Alphabet Inc. (A)", "Sector": "Communication Services"},
+    {"Symbol": "META", "Name": "Meta Platforms Inc.", "Sector": "Communication Services"},
+    {"Symbol": "TSLA", "Name": "Tesla Inc.", "Sector": "Consumer Discretionary"},
+    {"Symbol": "BRK-B", "Name": "Berkshire Hathaway (B)", "Sector": "Financials"},
+    {"Symbol": "JPM", "Name": "JPMorgan Chase & Co.", "Sector": "Financials"},
+    {"Symbol": "V", "Name": "Visa Inc.", "Sector": "Financials"},
+    {"Symbol": "JNJ", "Name": "Johnson & Johnson", "Sector": "Health Care"},
+    {"Symbol": "UNH", "Name": "UnitedHealth Group", "Sector": "Health Care"},
+    {"Symbol": "XOM", "Name": "Exxon Mobil Corp.", "Sector": "Energy"},
+    {"Symbol": "WMT", "Name": "Walmart Inc.", "Sector": "Consumer Staples"},
+    {"Symbol": "MA", "Name": "Mastercard Inc.", "Sector": "Financials"},
+    {"Symbol": "PG", "Name": "Procter & Gamble Co.", "Sector": "Consumer Staples"},
+    {"Symbol": "HD", "Name": "Home Depot Inc.", "Sector": "Consumer Discretionary"},
+    {"Symbol": "COST", "Name": "Costco Wholesale", "Sector": "Consumer Staples"},
+    {"Symbol": "ABBV", "Name": "AbbVie Inc.", "Sector": "Health Care"},
+    {"Symbol": "CRM", "Name": "Salesforce Inc.", "Sector": "Information Technology"},
+    {"Symbol": "BAC", "Name": "Bank of America Corp.", "Sector": "Financials"},
+    {"Symbol": "MRK", "Name": "Merck & Co. Inc.", "Sector": "Health Care"},
+    {"Symbol": "CVX", "Name": "Chevron Corp.", "Sector": "Energy"},
+    {"Symbol": "NFLX", "Name": "Netflix Inc.", "Sector": "Communication Services"},
+    {"Symbol": "AMD", "Name": "Advanced Micro Devices", "Sector": "Information Technology"},
+    {"Symbol": "LIN", "Name": "Linde plc", "Sector": "Materials"},
+    {"Symbol": "TMO", "Name": "Thermo Fisher Scientific", "Sector": "Health Care"},
+    {"Symbol": "PEP", "Name": "PepsiCo Inc.", "Sector": "Consumer Staples"},
+    {"Symbol": "ADBE", "Name": "Adobe Inc.", "Sector": "Information Technology"},
+    {"Symbol": "DIS", "Name": "Walt Disney Co.", "Sector": "Communication Services"},
+    {"Symbol": "CSCO", "Name": "Cisco Systems Inc.", "Sector": "Information Technology"},
+    {"Symbol": "ABT", "Name": "Abbott Laboratories", "Sector": "Health Care"},
+    {"Symbol": "ACN", "Name": "Accenture plc", "Sector": "Information Technology"},
+    {"Symbol": "INTC", "Name": "Intel Corp.", "Sector": "Information Technology"},
+    {"Symbol": "WFC", "Name": "Wells Fargo & Co.", "Sector": "Financials"},
+    {"Symbol": "QCOM", "Name": "Qualcomm Inc.", "Sector": "Information Technology"},
+    {"Symbol": "CMCSA", "Name": "Comcast Corp.", "Sector": "Communication Services"},
+    {"Symbol": "IBM", "Name": "IBM Corp.", "Sector": "Information Technology"},
+    {"Symbol": "INTU", "Name": "Intuit Inc.", "Sector": "Information Technology"},
+    {"Symbol": "GE", "Name": "GE Aerospace", "Sector": "Industrials"},
+    {"Symbol": "AMAT", "Name": "Applied Materials", "Sector": "Information Technology"},
+    {"Symbol": "CAT", "Name": "Caterpillar Inc.", "Sector": "Industrials"},
+    {"Symbol": "NOW", "Name": "ServiceNow Inc.", "Sector": "Information Technology"},
+    {"Symbol": "TXN", "Name": "Texas Instruments", "Sector": "Information Technology"},
+    {"Symbol": "GS", "Name": "Goldman Sachs Group", "Sector": "Financials"},
+    {"Symbol": "BKNG", "Name": "Booking Holdings", "Sector": "Consumer Discretionary"},
+    {"Symbol": "ISRG", "Name": "Intuitive Surgical", "Sector": "Health Care"},
+    {"Symbol": "SPGI", "Name": "S&P Global Inc.", "Sector": "Financials"},
+    {"Symbol": "PFE", "Name": "Pfizer Inc.", "Sector": "Health Care"},
+    {"Symbol": "T", "Name": "AT&T Inc.", "Sector": "Communication Services"},
+]
+
+
 @st.cache_data(ttl=3600)
 def get_sp500_tickers():
-    """Scrape S&P 500 tickers from Wikipedia."""
+    """Scrape S&P 500 tickers from Wikipedia, with fallback to a curated list."""
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    resp = requests.get(url, timeout=15)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
-    table = soup.find("table", {"id": "constituents"})
-    rows = table.find("tbody").find_all("tr")[1:]
-    tickers = []
-    for row in rows:
-        cols = row.find_all("td")
-        if cols:
-            symbol = cols[0].text.strip().replace(".", "-")
-            name = cols[1].text.strip()
-            sector = cols[3].text.strip()
-            tickers.append({"Symbol": symbol, "Name": name, "Sector": sector})
-    return pd.DataFrame(tickers)
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; StockEarningsTracker/1.0)"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        table = soup.find("table", {"id": "constituents"})
+        rows = table.find("tbody").find_all("tr")[1:]
+        tickers = []
+        for row in rows:
+            cols = row.find_all("td")
+            if cols:
+                symbol = cols[0].text.strip().replace(".", "-")
+                name = cols[1].text.strip()
+                sector = cols[3].text.strip()
+                tickers.append({"Symbol": symbol, "Name": name, "Sector": sector})
+        if tickers:
+            return pd.DataFrame(tickers)
+    except Exception:
+        pass
+    # Fallback to curated top-50 S&P 500 stocks
+    return pd.DataFrame(DEFAULT_TICKERS)
 
 
 @st.cache_data(ttl=3600)
