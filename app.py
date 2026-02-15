@@ -283,12 +283,14 @@ else:
 # --- Fetch buttons ---
 btn_col1, btn_col2, _ = st.columns([1, 1, 2])
 with btn_col1:
-    fetch_earnings_clicked = st.button("Fetch Earnings Data", type="primary")
+    st.button("Fetch Earnings Data", type="primary",
+              on_click=lambda: st.session_state.update({"do_fetch_earnings": True}))
 with btn_col2:
-    fetch_price_clicked = st.button("Fetch Last Price & Volume", type="secondary")
+    st.button("Fetch Last Price & Volume", type="secondary",
+              on_click=lambda: st.session_state.update({"do_fetch_price": True}))
 
 # --- Fetch last price & volume ---
-if fetch_price_clicked:
+if st.session_state.pop("do_fetch_price", False):
     progress = st.progress(0, text="Fetching price & volume data...")
     price_results = []
     for i, sym in enumerate(symbols):
@@ -303,27 +305,31 @@ if fetch_price_clicked:
 if st.session_state.get("price_results"):
     price_df = pd.DataFrame(st.session_state["price_results"])
     st.subheader(f"Last Trading Day - Price & Volume ({len(price_df)} stocks)")
-    styled_price = price_df.style.format({
-        "Last Price": lambda x: f"${x:,.2f}" if pd.notna(x) else "N/A",
-        "Volume": lambda x: f"{x:,.0f}" if pd.notna(x) else "N/A",
-    })
-    st.dataframe(styled_price, use_container_width=True, height=600)
+    st.dataframe(
+        price_df,
+        use_container_width=True,
+        height=600,
+        column_config={
+            "Last Price": st.column_config.NumberColumn(format="$%.2f"),
+            "Volume": st.column_config.NumberColumn(format="%d"),
+        },
+    )
 
 # --- Fetch earnings data ---
-if fetch_earnings_clicked or st.session_state.get("results"):
-    if "results" not in st.session_state or st.session_state.get("symbols") != symbols:
-        progress = st.progress(0, text="Fetching earnings data...")
-        results = []
-        for i, sym in enumerate(symbols):
-            progress.progress((i + 1) / len(symbols), text=f"Fetching {sym} ({i+1}/{len(symbols)})...")
-            data = fetch_earnings_data(sym)
-            results.append({"Symbol": sym, **data})
-            if (i + 1) % 5 == 0:
-                time.sleep(0.5)  # Rate-limit to avoid throttling
-        progress.empty()
-        st.session_state["results"] = results
-        st.session_state["symbols"] = symbols
+if st.session_state.pop("do_fetch_earnings", False):
+    progress = st.progress(0, text="Fetching earnings data...")
+    results = []
+    for i, sym in enumerate(symbols):
+        progress.progress((i + 1) / len(symbols), text=f"Fetching {sym} ({i+1}/{len(symbols)})...")
+        data = fetch_earnings_data(sym)
+        results.append({"Symbol": sym, **data})
+        if (i + 1) % 5 == 0:
+            time.sleep(0.5)
+    progress.empty()
+    st.session_state["results"] = results
+    st.session_state["symbols"] = symbols
 
+if st.session_state.get("results"):
     results = st.session_state["results"]
 
     # --- Build summary table ---
@@ -331,8 +337,14 @@ if fetch_earnings_clicked or st.session_state.get("results"):
     for r in results:
         next_earn = r.get("next_earnings")
         if next_earn is not None:
-            next_earn_str = pd.Timestamp(next_earn).strftime("%Y-%m-%d")
-            days_away = (pd.Timestamp(next_earn).tz_localize(None) - pd.Timestamp.now()).days
+            try:
+                ts = pd.Timestamp(next_earn)
+                next_earn_str = ts.strftime("%Y-%m-%d")
+                ts_naive = ts.tz_localize(None) if ts.tzinfo else ts
+                days_away = (ts_naive - pd.Timestamp.now()).days
+            except Exception:
+                next_earn_str = "N/A"
+                days_away = None
         else:
             next_earn_str = "N/A"
             days_away = None
@@ -371,11 +383,12 @@ if fetch_earnings_clicked or st.session_state.get("results"):
     # Highlight formatting
     def highlight_earnings(row):
         styles = [""] * len(row)
-        if row["Days Until Earnings"] is not None and not pd.isna(row["Days Until Earnings"]):
-            if row["Days Until Earnings"] <= 7:
+        days = row["Days Until Earnings"]
+        if days is not None and not pd.isna(days):
+            if days <= 7:
                 styles[1] = "background-color: #ffcccc; font-weight: bold"
                 styles[2] = "background-color: #ffcccc; font-weight: bold"
-            elif row["Days Until Earnings"] <= 30:
+            elif days <= 30:
                 styles[1] = "background-color: #fff3cd"
                 styles[2] = "background-color: #fff3cd"
         return styles
